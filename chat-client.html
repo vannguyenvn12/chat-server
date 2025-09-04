@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>VanGPT</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --bg:#0b1020; --panel:#121831; --muted:#8ea0c7; --accent:#4da3ff; --ok:#27c093; --err:#ff6b6b; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; background:var(--bg); color:#eaf0ff; display:grid; place-items:center; min-height:100dvh; }
+    .wrap { width:min(960px, 92vw); display:grid; gap:16px; }
+    h1 { margin:0; font-size:20px; font-weight:700; letter-spacing:.2px; color:#fff; }
+    .card { background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border:1px solid rgba(255,255,255,0.09); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,0.25); }
+    .row { display:flex; gap:12px; align-items:center; }
+    .col { display:grid; gap:10px; }
+    .chat-panel { height:45vh; overflow:auto; padding:16px; }
+    .msg { padding:10px 12px; border-radius:12px; margin:6px 0; max-width:78%; white-space:pre-wrap; word-break:break-word; line-height:1.4; }
+    .me { background:#213156; margin-left:auto; border:1px solid rgba(255,255,255,0.06); }
+    .bot { background:#182647; border:1px solid rgba(255,255,255,0.06); }
+    .meta { font-size:12px; color:var(--muted); margin-top:2px; }
+    .toolbar { padding:12px; display:grid; gap:10px; }
+    textarea { width:100%; min-height:96px; padding:12px 14px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:#0f1530; color:#eaf0ff; outline:none; resize:vertical; }
+    textarea:focus { border-color: var(--accent); box-shadow:0 0 0 3px rgba(77,163,255,.2); }
+    input[type="text"] { width:100%; padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:#0f1530; color:#eaf0ff; outline:none; }
+    .btn { appearance:none; border:none; padding:10px 14px; border-radius:12px; background:var(--accent); color:#06122b; font-weight:700; cursor:pointer; transition:transform .04s ease, filter .15s ease; }
+    .btn.secondary { background:#253458; color:#dfe7ff; }
+    .btn.ghost { background:#253458; color:#dfe7ff; opacity:.9; }
+    .btn:disabled { filter:grayscale(.6) brightness(.8); cursor:not-allowed; }
+    .btn:active { transform:translateY(1px); }
+    .status { font-size:12px; color:var(--muted); }
+    .json { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size:12px; background:#0f1530; color:#cfe2ff; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); max-height:180px; overflow:auto; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; margin-left:8px; color:#06122b; background:var(--ok); }
+    .pill.err { background:var(--err); color:#fff; }
+    footer { text-align:center; color:var(--muted); font-size:12px; padding:8px 0 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Văn GPT <span id="serverState" class="pill">ready</span></h1>
+
+    <!-- Chat khung -->
+    <section class="card chat-panel" id="chat"></section>
+
+    <!-- Form điều khiển -->
+    <section class="card toolbar">
+      <div class="col">
+        <label for="prompt">Nội dung (prompt) — Enter để gửi, Shift+Enter xuống dòng</label>
+        <textarea id="prompt" placeholder="Viết 3 bữa ăn healthy dạng markdown."></textarea>
+      </div>
+
+      <div class="row">
+        <div class="col" style="flex:2;">
+          <label for="anchors">Anchors (cho get_last_after, phân tách bằng dấu “|”)</label>
+          <input id="anchors" type="text" value="tôi đã nói|bạn đã nói|chatgpt đã nói|you said" />
+        </div>
+        <div class="col" style="flex:1;">
+          <label for="reqId">Request ID (tùy chọn)</label>
+          <input id="reqId" type="text" placeholder="vd: job-001" />
+        </div>
+      </div>
+
+      <div class="row">
+        <button id="btnSend" class="btn">Gửi</button>
+        <button id="btnGetLast" class="btn secondary">Lấy kết quả</button>
+        <button id="btnPdf" class="btn ghost" title="Gửi text và tải về PDF">PDF download</button>
+        <div id="status" class="status"></div>
+      </div>
+
+      <div class="col">
+        <div class="meta">Phản hồi thô:</div>
+        <pre id="raw" class="json">{}</pre>
+      </div>
+    </section>
+
+    <footer>Server mặc định: <code>http://localhost:8787/push</code></footer>
+  </div>
+
+  <script>
+  const API = 'http://localhost:8787/push';
+  const GAS_EXPORT = 'https://script.google.com/macros/s/AKfycbyS3h4Ci958a33mz2tWopo02R1jwQvZaUQrezmT6AzsaqkCc0NkLm4CxPJU_o2lklZo/exec';
+  const WS_URL = 'ws://localhost:8787/ws';
+
+  const el = {
+    chat: document.getElementById('chat'),
+    prompt: document.getElementById('prompt'),
+    anchors: document.getElementById('anchors'),
+    reqId: document.getElementById('reqId'),
+    btnSend: document.getElementById('btnSend'),
+    btnGetLast: document.getElementById('btnGetLast'),
+    btnPdf: document.getElementById('btnPdf'),
+    raw: document.getElementById('raw'),
+    status: document.getElementById('status'),
+    serverState: document.getElementById('serverState'),
+  };
+
+  function showStatus(text, ok = true) {
+    el.status.textContent = text || '';
+    el.serverState.textContent = ok ? 'ready' : 'error';
+    el.serverState.className = 'pill' + (ok ? '' : ' err');
+  }
+
+  function addMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + (role === 'me' ? 'me' : 'bot');
+    div.textContent = text;
+    el.chat.appendChild(div);
+    el.chat.scrollTop = el.chat.scrollHeight;
+  }
+
+  function setLoading(loading) {
+    el.btnSend.disabled = loading;
+    el.btnGetLast.disabled = loading;
+    el.btnPdf.disabled = loading;
+    el.prompt.disabled = loading;
+    el.anchors.disabled = loading;
+    el.reqId.disabled = loading;
+  }
+
+  async function callPush(payload) {
+    setLoading(true);
+    try {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json();
+      el.raw.textContent = JSON.stringify(json, null, 2);
+
+      if (!res.ok || !json.ok) {
+        showStatus(json.error || ('HTTP ' + res.status), false);
+        return json;
+      } else {
+        showStatus('OK');
+        return json;
+      }
+    } catch (e) {
+      showStatus(String(e), false);
+      el.raw.textContent = JSON.stringify({ error: String(e) }, null, 2);
+      return { ok: false, error: String(e) };
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ====== SEND ACTIONS ======
+
+  // theo dõi request hiện tại (để lọc kết quả WS đúng tab)
+  let currentId = '';
+  function setCurrentId(id) { currentId = id; }
+
+  async function onSend() {
+    const prompt = el.prompt.value.trim();
+    if (!prompt) { el.prompt.focus(); return; }
+    const id = el.reqId.value.trim() || ('job-' + Date.now());
+    setCurrentId(id);
+    addMsg('me', prompt);
+
+    const payload = { id, type: 'ask_block', prompt };
+    await callPush(payload);
+    // ask_block không addMsg từ HTTP (WS sẽ rebroadcast nếu có cấu hình)
+    el.prompt.value = '';
+  }
+
+  async function onGetLast() {
+    const id = el.reqId.value.trim() || ('last-' + Date.now());
+    setCurrentId(id);
+    const payload = { id, type: 'get_last_after' };
+    await callPush(payload);
+    // ❌ Không addMsg từ HTTP để tránh trùng. Chỉ nhận qua WS.
+  }
+
+  // ====== APPS SCRIPT EXPORT ======
+  async function postText(url, text) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'text/plain; charset=utf-8',
+        'accept': 'application/json, text/plain;q=0.9, */*;q=0.5'
+      },
+      body: text
+    });
+    return res;
+  }
+
+  async function onPdfDownload() {
+    const text = collectChatAsText();
+    if (!text) { addMsg('bot', 'Không có nội dung để xuất PDF.'); return; }
+
+    setLoading(true);
+    showStatus('Đang tạo PDF...');
+    try {
+      
+      const res = await postText(GAS_EXPORT, text);
+      if (!res.ok) {
+        const errTxt = await res.text().catch(()=> '');
+        showStatus('Lỗi xuất: ' + (errTxt || ('HTTP ' + res.status)), false);
+        return;
+      }
+
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      let data = null;
+
+      if (ct.includes('application/json')) {
+        data = await res.json();
+        el.raw.textContent = JSON.stringify(data, null, 2);
+      } else if (ct.startsWith('text/')) {
+        const txt = await res.text();
+        el.raw.textContent = txt;
+        try { data = JSON.parse(txt); } catch {}
+      } else if (ct.startsWith('application/pdf')) {
+        const blob = await res.blob();
+        const fname = safeFilename((el.reqId.value.trim() || 'export') + '-' +
+          new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')) + '.pdf';
+        triggerDownload(blob, fname);
+        showStatus('Đã tải PDF');
+        return;
+      } else {
+        const txt = await res.text();
+        el.raw.textContent = txt;
+        try { data = JSON.parse(txt); } catch {}
+      }
+
+      // Ưu tiên pdf_base64, sau đó pdfUrl
+      if (data?.pdf_base64) {
+        const byteChars = atob(data.pdf_base64);
+        const byteNums = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+        const byteArray = new Uint8Array(byteNums);
+        const blob = new Blob([byteArray], { type: 'application/pdf' });
+        const fname = safeFilename((el.reqId.value.trim() || 'export') + '-' +
+          new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')) + '.pdf';
+        triggerDownload(blob, fname);
+        showStatus('Đã tải PDF từ base64');
+      } else if (data?.pdfUrl) {
+        window.open(data.pdfUrl, '_blank', 'noopener');
+        showStatus('Đã mở link PDF');
+      } else {
+        showStatus('Không tìm thấy pdf_base64/pdfUrl trong phản hồi', false);
+      }
+    } catch (e) {
+      showStatus(String(e), false);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function safeFilename(name) {
+    return name.replace(/[^a-z0-9\-_.]/gi, '_');
+  }
+
+  function collectChatAsText() {
+    const nodes = el.chat.querySelectorAll('.msg');
+    const parts = [];
+    nodes.forEach(n => {
+      const role = n.classList.contains('me') ? 'me' : 'bot';
+      parts.push(role + ': ' + n.textContent);
+    });
+    return parts.join('\n');
+  }
+
+  // ====== WEBSOCKET (1 listener + chống trùng) ======
+  let ws;
+
+  // chống trùng theo id+text
+  const seen = new Set();
+  function shouldShowOnce(id, text) {
+    if (!text) return false;
+    const key = id + '::' + text;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    setTimeout(() => seen.delete(key), 60000);
+    return true;
+  }
+
+  // (tuỳ chọn) chỉ nhận kết quả khớp request hiện tại
+  function sameId(msg) {
+    return !currentId || !msg.id || msg.id === currentId;
+  }
+
+  let lastMsgById = {};
+
+function handleWsMessage(ev) {
+  let msg = {};
+  try { msg = JSON.parse(ev.data); } catch {}
+
+  if (msg.type === 'push_result') {
+    // lưu lại cho id
+    lastMsgById[msg.id] = msg;
+    // chỉ hiển thị cái mới nhất
+    el.raw.textContent = JSON.stringify(lastMsgById[msg.id], null, 2);
+
+    // xoá cũ trong chat và thêm lại cái cuối
+    const existing = el.chat.querySelectorAll(`.msg[data-id="${msg.id}"]`);
+    existing.forEach(e => e.remove());
+
+    console.log(msg.text)
+
+    if (msg.text) {
+      const div = document.createElement('div');
+      div.className = 'msg bot';
+      div.dataset.id = msg.id;
+      div.textContent = msg.text.replace('ChatGPT said', 'VanGPT said');
+      el.chat.appendChild(div);
+      el.chat.scrollTop = el.chat.scrollHeight;
+    }
+  }
+}
+
+  function connectWS() {
+    try {
+      ws = new WebSocket(WS_URL);
+      ws.addEventListener('open', () => { showStatus('WS connected'); console.log('WS connected'); });
+      ws.addEventListener('close', () => { showStatus('WS closed', false); setTimeout(connectWS, 1000); });
+      ws.addEventListener('error', () => { showStatus('WS error', false); });
+      ws.addEventListener('message', handleWsMessage); // ✅ chỉ 1 listener
+    } catch (e) {
+      showStatus(String(e), false);
+    }
+  }
+
+  // ====== BIND UI ======
+  el.btnSend.addEventListener('click', onSend);
+  el.btnGetLast.addEventListener('click', onGetLast);
+  el.btnPdf.addEventListener('click', onPdfDownload);
+
+  el.prompt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      onSend();
+    }
+  });
+
+  // ====== INIT ======
+  showStatus('ready');
+  connectWS();
+
+  // (tuỳ chọn) ping Export API lúc khởi động
+  (async () => {
+    try {
+      const res = await postText(GAS_EXPORT, 'ping');
+      if (res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.startsWith('text/')) {
+          const t = await res.text();
+          el.raw.textContent = t;
+        } else {
+          el.raw.textContent = 'Đã kết nối API Export (content-type: ' + ct + ')';
+        }
+      } else {
+        el.raw.textContent = 'Export API HTTP ' + res.status;
+      }
+    } catch (e) {
+      el.raw.textContent = String(e);
+    }
+  })();
+</script>
+
+</body>
+</html>
