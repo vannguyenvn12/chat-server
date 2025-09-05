@@ -1,8 +1,9 @@
-// npm i ws express cors
+// server.js
+// npm i express cors socket.io
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
-const { WebSocketServer, CLOSING } = require('ws');
+const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 8787;
 
@@ -11,43 +12,58 @@ app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
 
-// Kết nối WS đang hoạt động & các yêu cầu đang chờ phản hồi
-const clients = new Set();
+// ===== Socket.IO =====
+// Dùng path '/ws' để giữ tương thích URL cũ (ws://localhost:8787/ws)
+const io = new Server(server, {
+  path: '/ws',
+  cors: {
+    origin: [
+      'https://chat.openai.com',
+      'https://chatgpt.com',
+      'http://localhost:5173', // nếu bạn dev Vite
+      'http://localhost:8787'
+    ],
+    methods: ['GET', 'POST'],
+    credentials: false,
+  },
+});
+
+// Kết nối Socket.IO đang hoạt động & các yêu cầu đang chờ phản hồi
+const sockets = new Set();
 const pending = new Map(); // id -> {resolve, reject, timer}
 
 // --- Tiện ích ---
 function broadcast(obj) {
-  const data = JSON.stringify(obj);
-  let sent = 0;
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) { ws.send(data); sent++; }
-  }
-  return sent;
+  io.emit('server_push', obj); // event thống nhất
+  return sockets.size;         // trả về số client đang kết nối (tham khảo)
 }
+
 function waitFor(id, timeoutMs = 25000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error('timeout waiting for WS result'));
+      reject(new Error('timeout waiting for client_result'));
     }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
   });
 }
 
-// --- WS hub ---
-wss.on('connection', (ws) => {
-  clients.add(ws);
-  ws.on('close', () => clients.delete(ws));
+// --- Socket.IO hub ---
+io.on('connection', (socket) => {
+  sockets.add(socket);
+  // console.log('[io] connected', socket.id);
 
-  ws.on('message', (buf) => {
-    let msg = {};
-    try { msg = JSON.parse(buf.toString()); } catch {}
+  socket.on('disconnect', () => {
+    sockets.delete(socket);
+    // console.log('[io] disconnected', socket.id);
+  });
+
+  // Extension/clients gửi kết quả về đây
+  socket.on('client_result', (msg = {}) => {
     const id = msg.id;
-
-    // Trả kết quả cho HTTP nếu đang đợi theo id
-    if (id && pending.has(id)) {
+    if (!id) return;
+    if (pending.has(id)) {
       const p = pending.get(id);
       clearTimeout(p.timer);
       pending.delete(id);
@@ -55,11 +71,14 @@ wss.on('connection', (ws) => {
     }
   });
 
-  // ws.send(JSON.stringify({ type: 'hello', t: Date.now() }));
+  // (tùy chọn) extension có thể ping ready
+  socket.on('ext_ready', (payload) => {
+    // console.log('[io] ext_ready', socket.id, payload);
+  });
 });
 
 // --- HTTP ---
-app.get('/clients', (req, res) => res.json({ count: clients.size }));
+app.get('/clients', (req, res) => res.json({ count: sockets.size }));
 
 // POST /push => broadcast & CHỜ kết quả trả về theo id (request/response)
 app.post('/push', async (req, res) => {
@@ -67,47 +86,44 @@ app.post('/push', async (req, res) => {
   const id = body.id || `req-${Date.now()}`;
   body.id = id;
 
-  // Mặc định anchors khi gọi get_last_after mà thiếu anchors
-  // if (body.type === 'get_last_after' && (!Array.isArray(body.anchors) || body.anchors.length === 0)) {
-  //   body.anchors = ['tôi đã nói', 'bạn đã nói', 'chatgpt đã nói', 'you said'];
-  // }
+  if (sockets.size === 0) {
+    return res.status(503).json({ ok: false, error: 'no socket.io clients connected' });
+  }
 
-  if (clients.size === 0) return res.status(503).json({ ok:false, error:'no ws clients connected' });
-
-  // Gửi lệnh cho extension
+  // Gửi lệnh cho extension qua Socket.IO
   broadcast(body);
 
-  // Chờ extension trả về gói có cùng id (ví dụ: get_last_after_result)
   try {
+    // ask_block không cần chờ — giữ hành vi cũ
     if (body.type === 'ask_block') {
-        return res.json({ ok: true, id, result: 'ok' });
+      return res.json({ ok: true, id, result: 'ok' });
     }
+
+    // Chờ extension emit 'client_result' cùng id
     const result = await waitFor(id, 25000);
-    // Gửi 1 lần nữa cho client khác
+
+    // Phát lại cho tất cả (cho UI khác có thể lắng nghe)
     const text =
       result?.text ??
-      result?.result?.text ?? // đề phòng extension bọc thêm 1 lớp
+      result?.result?.text ?? // đề phòng client bọc
       '';
 
-    broadcast({
+    io.emit('push_result', {
       type: 'push_result',
       id,
       text,
       payload: result,
-      t: Date.now()
+      t: Date.now(),
     });
 
-    // Trả thẳng kết quả cho caller
-    return res.json({ ok: true, id, result: result });
+    return res.json({ ok: true, id, result });
   } catch (e) {
-    return res.status(504).json({ ok:false, id, error: e.message });
+    return res.status(504).json({ ok: false, id, error: e.message });
   }
 });
 
-
-
 server.listen(PORT, () => {
-  console.log(`HTTP+WS on http://localhost:${PORT}`);
-  console.log(`- WS: ws://localhost:${PORT}/ws`);
+  console.log(`HTTP+Socket.IO on http://localhost:${PORT}`);
+  console.log(`- Socket.IO path: ws://localhost:${PORT}/ws`);
   console.log(`- POST /push ; GET /clients`);
 });
