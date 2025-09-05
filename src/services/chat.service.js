@@ -23,12 +23,13 @@ async function getOrCreateSingleConversation() {
  */
 async function saveFirstMe({ conversation_id, push_id, content }) {
     if (!push_id) throw new Error('saveFirstMe requires push_id');
-    const doc = await Message.findOneAndUpdate(
+    const res = await Message.findOneAndUpdate(
         { conversation_id, role: 'me', push_id },
         { $setOnInsert: { content, status: 'sent', created_at: new Date() } },
         { upsert: true, new: true, setDefaultsOnInsert: true }
-    ).lean();
-    return doc;
+    );
+
+    return res;
 }
 
 /**
@@ -61,9 +62,9 @@ async function saveLastAssistant({ conversation_id, push_id, content }) {
 }
 
 // Upsert assistant theo kiểu REPLACE (full text tạm thời)
-async function upsertAssistantReplace({ conversation_id, push_id, content, meta }) {
+async function upsertAssistantReplace({ conversation_id, push_id, content, meta, reply_to }) {
     return Message.findOneAndUpdate(
-        { conversation_id, push_id, role: 'assistant' },
+        { conversation_id, role: 'assistant', reply_to },
         {
             $set: {
                 content,
@@ -77,10 +78,10 @@ async function upsertAssistantReplace({ conversation_id, push_id, content, meta 
 }
 
 // Upsert assistant theo kiểu APPEND (delta)
-async function upsertAssistantAppend({ conversation_id, push_id, delta, meta }) {
+async function upsertAssistantAppend({ conversation_id, push_id, delta, meta, reply_to }) {
     // ⚠️ YÊU CẦU MongoDB cho phép "aggregation pipeline update"
     return Message.findOneAndUpdate(
-        { conversation_id, push_id, role: 'assistant' },
+        { conversation_id, role: 'assistant', reply_to },
         [
             {
                 $set: {

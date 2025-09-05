@@ -61,15 +61,22 @@ exports.postPush = async (req, res) => {
     body.push_id = storagePushId;
 
     // 1) Lưu user ở CHUNK ĐẦU
+    let myMessageId = null;
     try {
         const meText = pickOutboundText(body);
         if (meText) {
-            await saveFirstMe({
+            const doc = await saveFirstMe({
                 conversation_id,
                 push_id: storagePushId,
                 content: meText,
                 meta: { stream_key },
             });
+
+
+
+            myMessageId = doc?._id
+            console.log('check myMessageId', myMessageId)
+
         }
     } catch (_) { }
 
@@ -87,6 +94,7 @@ exports.postPush = async (req, res) => {
         const fullText = result?.text ?? result?.result?.text;
         const delta = result?.delta ?? result?.result?.delta;
 
+
         try {
             if (typeof fullText === 'string' && fullText.length) {
                 await upsertAssistantReplace({
@@ -94,6 +102,7 @@ exports.postPush = async (req, res) => {
                     push_id: storagePushId,
                     content: fullText,
                     meta: { stream_key },
+                    reply_to: myMessageId,
                 });
             } else if (typeof delta === 'string' && delta.length) {
                 await upsertAssistantAppend({
@@ -101,6 +110,7 @@ exports.postPush = async (req, res) => {
                     push_id: storagePushId,
                     delta,
                     meta: { stream_key },
+                    reply_to: myMessageId,
                 });
             }
         } catch (_) { }
