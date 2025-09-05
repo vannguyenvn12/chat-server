@@ -1,7 +1,8 @@
 const { clientCount, broadcast, waitFor, emitPushResult } = require('../sockets/hub');
 const { getOrCreateSingleConversation, saveFirstMe, saveLastAssistant, upsertAssistantReplace, upsertAssistantAppend } = require('../services/chat.service');
 const { ulid } = require('ulid');
-const { getOrCreateStoragePushId, clearStoragePushId } = require('../utils/stream-push-map');
+const { getState, setState, getOrCreateState, clearState } = require('../utils/stream-push-map');
+
 
 function looksLikeJSON(str) {
     if (typeof str !== 'string') return false;
@@ -48,20 +49,17 @@ exports.postPush = async (req, res) => {
         body.conversation_id ||
         await getOrCreateSingleConversation();
 
-    // Stream flags do client gán
     let stream_key = getStreamKey(req, body);
     const isFirstChunk = !!body.is_first;
     const isFinalChunk = !!body.is_final;
-
-    // Nếu không có stream_key ở chunk đầu → tự sinh
     if (!stream_key) stream_key = ulid();
 
-    // Push ID ổn định cho cả stream
-    const storagePushId = getOrCreateStoragePushId(conversation_id, stream_key);
+    // ✅ Lấy/khởi tạo state { push_id, me_id? }
+    const state = getOrCreateState(conversation_id, stream_key, () => ulid());
+    const storagePushId = state.push_id;
     body.push_id = storagePushId;
 
-    // 1) Lưu user ở CHUNK ĐẦU
-    let myMessageId = null;
+    // 1) Lưu user CHỈ khi có meText (thường là chunk đầu)
     try {
         const meText = pickOutboundText(body);
         if (meText) {
@@ -71,12 +69,12 @@ exports.postPush = async (req, res) => {
                 content: meText,
                 meta: { stream_key },
             });
-
-
-
-            myMessageId = doc?._id
-            console.log('check myMessageId', myMessageId)
-
+            // ✅ Cache lại me_id cho các chunk sau
+            if (doc?._id) {
+                console.log('doc?._id', doc?._id);
+                state.me_id = String(doc._id);
+                setState(conversation_id, stream_key, state);
+            }
         }
     } catch (_) { }
 
@@ -90,10 +88,12 @@ exports.postPush = async (req, res) => {
 
         const result = await waitFor(correlationId, 25000);
 
-        // 3) Ghi assistant: full hoặc delta
         const fullText = result?.text ?? result?.result?.text;
         const delta = result?.delta ?? result?.result?.delta;
 
+        // ✅ Lấy me_id đã cache cho reply_to
+        const replyTo = state.me_id || null;
+        console.log('replyTo', replyTo)
 
         try {
             if (typeof fullText === 'string' && fullText.length) {
@@ -102,7 +102,7 @@ exports.postPush = async (req, res) => {
                     push_id: storagePushId,
                     content: fullText,
                     meta: { stream_key },
-                    reply_to: myMessageId,
+                    reply_to: replyTo,
                 });
             } else if (typeof delta === 'string' && delta.length) {
                 await upsertAssistantAppend({
@@ -110,14 +110,14 @@ exports.postPush = async (req, res) => {
                     push_id: storagePushId,
                     delta,
                     meta: { stream_key },
-                    reply_to: myMessageId,
+                    reply_to: replyTo,
                 });
             }
         } catch (_) { }
 
-        // 4) Kết thúc stream → dọn map
+        // 4) Kết thúc stream → dọn state
         if (isFinalChunk) {
-            clearStoragePushId(conversation_id, stream_key);
+            clearState(conversation_id, stream_key);
         }
 
         const text = fullText ?? delta ?? '';
@@ -125,6 +125,6 @@ exports.postPush = async (req, res) => {
 
         return res.json({ ok: true, id: correlationId, push_id: storagePushId, stream_key, result });
     } catch (e) {
-        return res.status(504).json({ ok: false, id: correlationId, push_id: storagePushId, stream_key, error: e.message });
+        return res.status
     }
-};
+}

@@ -64,7 +64,7 @@ async function saveLastAssistant({ conversation_id, push_id, content }) {
 // Upsert assistant theo kiểu REPLACE (full text tạm thời)
 async function upsertAssistantReplace({ conversation_id, push_id, content, meta, reply_to }) {
     return Message.findOneAndUpdate(
-        { conversation_id, role: 'assistant', reply_to },
+        { conversation_id, role: 'assistant', reply_to, push_id },
         {
             $set: {
                 content,
@@ -81,7 +81,7 @@ async function upsertAssistantReplace({ conversation_id, push_id, content, meta,
 async function upsertAssistantAppend({ conversation_id, push_id, delta, meta, reply_to }) {
     // ⚠️ YÊU CẦU MongoDB cho phép "aggregation pipeline update"
     return Message.findOneAndUpdate(
-        { conversation_id, role: 'assistant', reply_to },
+        { conversation_id, role: 'assistant', reply_to, push_id },
         [
             {
                 $set: {
