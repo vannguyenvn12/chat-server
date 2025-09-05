@@ -1,12 +1,11 @@
 const express = require('express');
-const router = express.Router();
+const chatRoutes = express.Router();
 const ctrl = require('../controllers/chat.controller');
 
 // Conversation
-router.post('/conversations', ctrl.createConversation);
+// chatRoutes.post('', ctrl.createConversation);
 
-// Messages
-router.get('/conversations/:conversationId/messages', ctrl.listMessages);
-router.post('/conversations/:conversationId/messages', ctrl.sendMessage);
+// NEW: lấy toàn bộ lịch sử để client render sau mỗi push
+chatRoutes.get('/:conversationId/messages', ctrl.listAllMessages);
 
-module.exports = router;
+module.exports = chatRoutes;

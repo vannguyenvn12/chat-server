@@ -1,19 +1,43 @@
 const { clientCount, broadcast, waitFor, emitPushResult } = require('../sockets/hub');
-const { getOrCreateSingleConversation, saveFirstMe, saveLastAssistant } = require('../services/chat.service');
+const { getOrCreateSingleConversation, saveFirstMe, saveLastAssistant, upsertAssistantReplace, upsertAssistantAppend } = require('../services/chat.service');
+const { ulid } = require('ulid');
+const { getOrCreateStoragePushId, clearStoragePushId } = require('../utils/stream-push-map');
+
+function looksLikeJSON(str) {
+    if (typeof str !== 'string') return false;
+    const s = str.trim();
+    if (!(s.startsWith('{') || s.startsWith('['))) return false;
+    try { JSON.parse(s); return true; } catch { return false; }
+}
 
 function pickOutboundText(body) {
-    return body.prompt ?? body.message ?? body.text ?? JSON.stringify(body);
+    // Ưu tiên chuỗi "người gõ" thay vì toàn bộ body
+    const candidates = [body.prompt, body.message, body.text];
+
+    for (const v of candidates) {
+        if (typeof v === 'string' && v.trim()) {
+            // nếu chuỗi là JSON → bỏ
+            if (!looksLikeJSON(v)) return v.trim();
+        }
+    }
+    // Không fallback stringify(body) nữa để tránh lưu JSON
+    return '';
 }
+
 function pickInboundText(result) {
     return result?.text ?? result?.result?.text ?? JSON.stringify(result ?? {});
 }
 
 exports.getClients = (req, res) => res.json({ count: clientCount() });
 
+function getStreamKey(req, body) {
+    return body.stream_key || req.query.stream_key || body.parent_id || body.root_id;
+}
+
 exports.postPush = async (req, res) => {
     const body = req.body || {};
-    const id = body.id || `req-${Date.now()}`;
-    body.id = id;
+    const correlationId = body.id || `req-${Date.now()}`;
+    body.id = correlationId;
 
     if (clientCount() === 0) {
         return res.status(503).json({ ok: false, error: 'no socket.io clients connected' });
@@ -21,40 +45,76 @@ exports.postPush = async (req, res) => {
 
     const conversation_id =
         req.query.conversation_id ||
-        req.body.conversation_id ||
+        body.conversation_id ||
         await getOrCreateSingleConversation();
 
-    // === LƯU TIN ĐẦU (ME) — chỉ 1 lần cho mỗi push_id ===
+    // Stream flags do client gán
+    let stream_key = getStreamKey(req, body);
+    const isFirstChunk = !!body.is_first;
+    const isFinalChunk = !!body.is_final;
+
+    // Nếu không có stream_key ở chunk đầu → tự sinh
+    if (!stream_key) stream_key = ulid();
+
+    // Push ID ổn định cho cả stream
+    const storagePushId = getOrCreateStoragePushId(conversation_id, stream_key);
+    body.push_id = storagePushId;
+
+    // 1) Lưu user ở CHUNK ĐẦU
     try {
         const meText = pickOutboundText(body);
-        if (typeof meText === 'string' && meText.length) {
-            await saveFirstMe({ conversation_id, push_id: id, content: meText });
+        if (meText) {
+            await saveFirstMe({
+                conversation_id,
+                push_id: storagePushId,
+                content: meText,
+                meta: { stream_key },
+            });
         }
-    } catch (_) { /* không chặn flow */ }
+    } catch (_) { }
 
-    // broadcast như cũ
+    // 2) Phát realtime
     broadcast(body);
 
     try {
         if (body.type === 'ask_block') {
-            return res.json({ ok: true, id, result: 'ok' });
+            return res.json({ ok: true, id: correlationId, push_id: storagePushId, stream_key, result: 'ok' });
         }
 
-        const result = await waitFor(id, 25000);
+        const result = await waitFor(correlationId, 25000);
 
-        // === LƯU TIN CUỐI (ASSISTANT) — luôn ghi đè theo push_id ===
+        // 3) Ghi assistant: full hoặc delta
+        const fullText = result?.text ?? result?.result?.text;
+        const delta = result?.delta ?? result?.result?.delta;
+
         try {
-            const asText = pickInboundText(result);
-            if (typeof asText === 'string' && asText.length) {
-                await saveLastAssistant({ conversation_id, push_id: id, content: asText });
+            if (typeof fullText === 'string' && fullText.length) {
+                await upsertAssistantReplace({
+                    conversation_id,
+                    push_id: storagePushId,
+                    content: fullText,
+                    meta: { stream_key },
+                });
+            } else if (typeof delta === 'string' && delta.length) {
+                await upsertAssistantAppend({
+                    conversation_id,
+                    push_id: storagePushId,
+                    delta,
+                    meta: { stream_key },
+                });
             }
-        } catch (_) { /* không chặn flow */ }
+        } catch (_) { }
 
-        const text = pickInboundText(result);
-        emitPushResult({ type: 'push_result', id, text, payload: result, t: Date.now() });
+        // 4) Kết thúc stream → dọn map
+        if (isFinalChunk) {
+            clearStoragePushId(conversation_id, stream_key);
+        }
 
-        return res.json({ ok: true, id, result });
+        const text = fullText ?? delta ?? '';
+        emitPushResult({ type: 'push_result', id: correlationId, text, payload: result, t: Date.now() });
+
+        return res.json({ ok: true, id: correlationId, push_id: storagePushId, stream_key, result });
     } catch (e) {
-        return res.status(504).json({ ok: false, id, error: e.message });
+        return res.status(504).json({ ok: false, id: correlationId, push_id: storagePushId, stream_key, error: e.message });
     }
 };

@@ -24,9 +24,19 @@ const messageSchema = new mongoose.Schema({
 messageSchema.index({ conversation_id: 1, created_at: 1 });
 
 // Bảo đảm MỖI (conversation, role, push_id) chỉ có 1 document
+// Unique cho ME: mỗi (conversation, 'me', push_id) chỉ 1 tin
 messageSchema.index(
     { conversation_id: 1, role: 1, push_id: 1 },
-    { unique: true, partialFilterExpression: { push_id: { $type: 'string' } } }
+    {
+        unique: true,
+        partialFilterExpression: { role: 'me', push_id: { $type: 'string' } }
+    }
+);
+
+// Non-unique cho ASSISTANT: cho phép nhiều bản ghi cùng push_id
+messageSchema.index(
+    { conversation_id: 1, role: 1, push_id: 1 },
+    { partialFilterExpression: { role: 'assistant', push_id: { $type: 'string' } } }
 );
 
 module.exports = mongoose.model('Message', messageSchema);
