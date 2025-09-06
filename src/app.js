@@ -6,6 +6,14 @@ const chatRoutes = require('./routes/chat.routes');
 
 const app = express();
 app.disable('etag');
+app.use((err, req, res, next) => {
+    if (err && err.code && err.field) {
+        return res.status(400).json({ ok: false, error: `${err.code} on field ${err.field}` });
+    }
+    if (err) return res.status(500).json({ ok: false, error: String(err) });
+    next();
+});
+
 
 app.use(cors({
     origin: [
@@ -13,6 +21,8 @@ app.use(cors({
         'https://chatgpt.com',
         'http://localhost:5173',
         'http://localhost:8787',
+        'https://d335dc940374.ngrok-free.app',
+        '*'
     ],
     methods: ['GET', 'POST'],
     credentials: false,
