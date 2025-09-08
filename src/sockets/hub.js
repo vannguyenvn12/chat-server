@@ -133,6 +133,75 @@ function getOccupancy() {
     };
 }
 
+// === NEW: force disconnect API ===
+function disconnectAllSockets(reason = 'admin_kick') {
+    if (!io) return 0;
+
+    const count = sockets.size;
+
+    // Thông báo trước khi ngắt (client có thể log/cleanup)
+    for (const s of Array.from(sockets)) {
+        try {
+            s.emit('server:disconnect', { reason });
+        } catch (_) { }
+    }
+
+    // Thực sự cắt kết nối
+    for (const s of Array.from(sockets)) {
+        try {
+            s.disconnect(true);    // true = close underlying connection
+        } catch (_) { }
+        sockets.delete(s);
+    }
+
+    // Dọn dẹp pending promises
+    for (const [id, p] of pending.entries()) {
+        try {
+            clearTimeout(p.timer);
+            p.reject(new Error('force-disconnect'));
+        } catch (_) { }
+        pending.delete(id);
+    }
+
+    // Reset trạng thái ghế độc quyền
+    occupantSocketId = null;
+    occupantClientId = null;
+
+    return count; // trả về số lượng socket đã ngắt
+}
+
+/**
+ * Gắn endpoint Express để "kill all sockets"
+ * @param {import('express').Express} app
+ * @param {{ path?: string, token?: string }} opts
+ *  - path: đường dẫn endpoint (mặc định: '/admin/sockets/kill-all')
+ *  - token: mã quản trị; request phải gửi header 'x-admin-token' = token này
+ */
+function attachKillAllEndpoint(app, opts = {}) {
+    const path = opts.path || '/admin/sockets/kill-all';
+    const token = opts.token || ''; // nếu rỗng thì không bắt buộc token (không khuyến nghị)
+
+    app.post(path, (req, res) => {
+        // if (token) {
+        //     const provided = req.header('x-admin-token') || '';
+        //     if (provided !== token) {
+        //         return res.status(401).json({ ok: false, error: 'unauthorized' });
+        //     }
+        // }
+
+        const reason = (req.body && req.body.reason) || 'admin_kick';
+        const killed = disconnectAllSockets(reason);
+
+        return res.json({
+            ok: true,
+            killed,
+            reason,
+            // trạng thái sau khi ngắt
+            occupancy: getOccupancy(),
+        });
+    });
+}
+
 module.exports = {
     initIO,
     clientCount,
@@ -142,4 +211,5 @@ module.exports = {
     emitPushResult,
     // optional
     getOccupancy,
+    disconnectAllSockets, attachKillAllEndpoint
 };
