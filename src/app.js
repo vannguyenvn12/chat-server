@@ -22,6 +22,7 @@ app.use(cors({
         'http://localhost:5173',
         'http://localhost:8787',
         'https://d335dc940374.ngrok-free.app',
+        'https://gpt.vannguyenv12.com',
         '*'
     ],
     methods: ['GET', 'POST'],
