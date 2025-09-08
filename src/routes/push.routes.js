@@ -7,5 +7,6 @@ const { uploadMiddleware } = require('../utils/upload');
 // Giữ nguyên endpoints cũ: GET /clients, POST /push
 router.get('/clients', ctrl.getClients);
 router.post('/push', correlationId(), uploadMiddleware, ctrl.postPush);
+router.post('/push/new', ctrl.postNew);
 
 module.exports = router;

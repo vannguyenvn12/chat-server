@@ -101,6 +101,12 @@ function broadcast(obj) {
     return sockets.size;         // trả về số client đang kết nối (tham khảo)
 }
 
+function broadcastNewUrl(obj) {
+    if (!io) return 0;
+    io.emit('new_url', obj); // event thống nhất
+    return sockets.size;         // trả về số client đang kết nối (tham khảo)
+}
+
 function waitFor(id, timeoutMs = 25000) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -130,6 +136,7 @@ module.exports = {
     initIO,
     clientCount,
     broadcast,
+    broadcastNewUrl,
     waitFor,
     emitPushResult,
     // optional

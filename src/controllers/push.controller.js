@@ -1,4 +1,4 @@
-const { clientCount, broadcast, waitFor, emitPushResult } = require('../sockets/hub');
+const { clientCount, broadcast, waitFor, emitPushResult, broadcastNewUrl } = require('../sockets/hub');
 const { getOrCreateSingleConversation, saveFirstMe, saveLastAssistant, upsertAssistantReplace, upsertAssistantAppend } = require('../services/chat.service');
 const { ulid } = require('ulid');
 const { getState, setState, getOrCreateState, clearState } = require('../utils/stream-push-map');
@@ -195,4 +195,9 @@ exports.postPush = async (req, res) => {
     } catch (e) {
         return res.status
     }
+}
+
+exports.postNew = async (req, res) => {
+    broadcastNewUrl();
+    res.json({ ok: true })
 }
