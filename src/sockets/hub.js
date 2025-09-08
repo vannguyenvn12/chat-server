@@ -22,6 +22,7 @@ function initIO(server) {
                 'https://chatgpt.com',
                 'http://localhost:5173',
                 'http://localhost:8787',
+                'https://gpt.vannguyenv12.com',
             ],
             methods: ['GET', 'POST'],
             credentials: false,
