@@ -7,6 +7,10 @@ let io = null;
 const sockets = new Set();
 const pending = new Map(); // id -> { resolve, reject, timer }
 
+// === NEW: biến giữ "chủ ghế" hiện tại (độc quyền) ===
+let occupantSocketId = null;
+let occupantClientId = null; // nếu muốn so sánh theo clientId ổn định từ phía client
+
 function initIO(server) {
     if (io) return io;
 
@@ -27,8 +31,42 @@ function initIO(server) {
     io.on('connection', (socket) => {
         sockets.add(socket);
 
+        // === Exclusive seat: client yêu cầu giữ ghế ===
+        socket.on('exclusive:claim', (payload = {}) => {
+            const clientId = payload.clientId || socket.id;
+
+            // Nếu chưa có ai giữ ghế -> chấp nhận
+            if (!occupantSocketId) {
+                occupantSocketId = socket.id;
+                occupantClientId = clientId;
+                socket.emit('exclusive:accept', { you: socket.id, clientId });
+                return;
+            }
+
+            // Nếu chính chủ reconnect (cùng socketId hoặc cùng clientId) -> chấp nhận
+            if (socket.id === occupantSocketId || (clientId && clientId === occupantClientId)) {
+                occupantSocketId = socket.id;   // cập nhật socketId mới nếu reconnect
+                occupantClientId = clientId;
+                socket.emit('exclusive:accept', { you: socket.id, clientId });
+                return;
+            }
+
+            // Đã có người dùng khác -> từ chối
+            socket.emit('exclusive:reject', {
+                by: occupantSocketId,
+                reason: 'occupied',
+            });
+        });
+
         socket.on('disconnect', () => {
             sockets.delete(socket);
+
+            // Nếu chủ ghế rời đi -> giải phóng ghế và thông báo cho mọi người
+            if (socket.id === occupantSocketId) {
+                occupantSocketId = null;
+                occupantClientId = null;
+                io.emit('exclusive:vacated'); // để client khác thử claim lại
+            }
         });
 
         // Extension/clients gửi kết quả về đây
@@ -45,7 +83,7 @@ function initIO(server) {
 
         // (tùy chọn) extension có thể ping ready
         socket.on('ext_ready', (_payload) => {
-            // bạn có thể log nếu muốn
+            // có thể log nếu muốn
         });
     });
 
@@ -78,10 +116,22 @@ function emitPushResult(payload) {
     io.emit('push_result', payload);
 }
 
+// === (tuỳ chọn) expose trạng thái ghế để debug/endpoint /clients ===
+function getOccupancy() {
+    return {
+        clients: sockets.size,
+        occupied: !!occupantSocketId,
+        occupantSocketId,
+        occupantClientId,
+    };
+}
+
 module.exports = {
     initIO,
     clientCount,
     broadcast,
     waitFor,
     emitPushResult,
+    // optional
+    getOccupancy,
 };
